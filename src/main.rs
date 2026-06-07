@@ -14,11 +14,12 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
-    CombineRgn, CreateFontIndirectW, CreateRectRgnIndirect, CreateSolidBrush, DeleteObject,
-    DrawTextW, FillRgn, GetDC, GetStockObject, GetSysColor, GetTextExtentPoint32W, ReleaseDC,
-    SelectObject, SetBkMode, SetTextColor, UpdateWindow, COLOR_GRAYTEXT, COLOR_HIGHLIGHT,
-    COLOR_HIGHLIGHTTEXT, COLOR_MENU, COLOR_MENUTEXT, DT_CENTER, DT_HIDEPREFIX, DT_LEFT,
-    DT_SINGLELINE, DT_VCENTER, HBRUSH, HFONT, HGDIOBJ, RGN_DIFF, TRANSPARENT, WHITE_BRUSH,
+    BeginPaint, CombineRgn, CreateFontIndirectW, CreatePen, CreateRectRgnIndirect, CreateSolidBrush,
+    DeleteObject, DrawTextW, EndPaint, FillRgn, GetDC, GetStockObject, GetSysColor,
+    GetTextExtentPoint32W, InvalidateRect, ReleaseDC, RoundRect, SelectObject, SetBkMode,
+    SetTextColor, UpdateWindow, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_MENU,
+    COLOR_MENUTEXT, DT_CENTER, DT_HIDEPREFIX, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT,
+    HGDIOBJ, LOGFONTW, PAINTSTRUCT, PS_SOLID, RGN_DIFF, TRANSPARENT, WHITE_BRUSH,
 };
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
@@ -33,25 +34,26 @@ use windows::Win32::UI::Controls::EM_SETRECT;
 use windows::Win32::UI::Controls::NMHDR;
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_CHECKED, ODS_GRAYED, ODS_HOTLIGHT, ODS_SELECTED,
-    ODT_MENU,
+    ODT_BUTTON, ODT_MENU,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuItem, CreateMenu, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, DrawMenuBar, GetMenu, GetMenuBarInfo, GetMenuItemCount, GetMenuItemInfoW,
-    GetMenuItemRect, GetMessageW, GetSystemMetrics, GetWindowLongPtrW, GetWindowRect,
-    LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RegisterClassW, SendMessageW, SetCursor,
-    SetMenu, SetMenuItemInfoW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, SystemParametersInfoW,
-    TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
-    GWLP_USERDATA, HICON, IDC_ARROW, LoadIconW, MENUBARINFO, MENUITEMINFOW, MF_BYCOMMAND,
-    MF_CHECKED, MF_POPUP,
-    MF_STRING, MF_UNCHECKED, MFT_OWNERDRAW, MIIM_DATA, MIIM_FTYPE,
-    MNC_EXECUTE, MSG, NONCLIENTMETRICSW, OBJID_MENU, SM_CXMENUCHECK, SM_CYMENU,
-    SPI_GETNONCLIENTMETRICS, SW_SHOW, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DRAWITEM, WM_LBUTTONDOWN,
-    WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE, WM_NCPAINT, WM_NOTIFY, WM_SETCURSOR, WM_SIZE,
-    WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_VISIBLE, WS_VSCROLL,
+    DispatchMessageW, DrawIconEx, DrawMenuBar, GetClientRect, GetMenu, GetMenuBarInfo,
+    GetMenuItemCount, GetMenuItemInfoW, GetMenuItemRect, GetMessageW, GetSystemMetrics,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, LoadCursorW, LoadImageW, MessageBoxW,
+    MoveWindow, PostQuitMessage, RegisterClassW, SendMessageW, SetCursor, SetMenu, SetMenuItemInfoW,
+    SetWindowLongPtrW, SetWindowTextW, ShowWindow, SystemParametersInfoW, TranslateMessage,
+    BS_OWNERDRAW, CREATESTRUCTW, CW_USEDEFAULT, DI_NORMAL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
+    GWLP_USERDATA, HICON, HMENU, IDC_ARROW, IMAGE_ICON, LR_DEFAULTCOLOR, LoadIconW, MENUBARINFO,
+    MENUITEMINFOW, MF_BYCOMMAND, MF_CHECKED, MF_POPUP, MF_STRING, MF_UNCHECKED, MFT_OWNERDRAW,
+    MIIM_DATA, MIIM_FTYPE, MNC_EXECUTE, MSG, NONCLIENTMETRICSW, OBJID_MENU, SM_CXMENUCHECK,
+    SM_CYMENU, SPI_GETNONCLIENTMETRICS, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
+    WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE,
+    WM_NCPAINT, WM_NOTIFY, WM_PAINT, WM_SETCURSOR, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
+    WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
 };
 
 const APP_CLASS: PCWSTR = w!("MarkdWindow");
@@ -60,7 +62,15 @@ const ID_FILE_OPEN: usize = 1001;
 const ID_FILE_EXIT: usize = 1002;
 const ID_HELP_ABOUT: usize = 2001;
 const ID_SETTINGS_DARKMODE: usize = 3001;
+const ID_WELCOME_OPEN: usize = 4001;
+const ID_WELCOME_EDIT: usize = 4002;
 const VIEW_PADDING: i32 = 24;
+
+// Welcome screen layout (logical pixels).
+const WELCOME_ICON: i32 = 96;
+const WELCOME_BTN_W: i32 = 200;
+const WELCOME_BTN_H: i32 = 48;
+const WELCOME_BTN_GAP: i32 = 16;
 
 // RichEdit background colors (COLORREF, 0x00BBGGRR).
 const LIGHT_BG: isize = 0x00FF_FFFF; // white
@@ -77,6 +87,11 @@ struct AppState {
     current_file: Option<PathBuf>,
     about_visible: bool,
     dark_mode: bool,
+    // Welcome (start) screen: shown when no document is open.
+    welcome_visible: bool,
+    welcome_open: HWND,
+    welcome_edit: HWND,
+    welcome_icon: HICON,
 }
 
 struct RtfStream {
@@ -102,6 +117,11 @@ thread_local! {
 
     // Cached system menu font, used to measure and paint owner-drawn menu items.
     static MENU_FONT: HFONT = unsafe { menu_font() };
+
+    // Fonts for the welcome screen.
+    static TITLE_FONT: HFONT = unsafe { ui_font(40, true) };
+    static SUBTITLE_FONT: HFONT = unsafe { ui_font(18, false) };
+    static BUTTON_FONT: HFONT = unsafe { ui_font(20, false) };
 }
 
 fn main() -> windows::core::Result<()> {
@@ -118,6 +138,10 @@ fn main() -> windows::core::Result<()> {
             current_file: None,
             about_visible: false,
             dark_mode: false,
+            welcome_visible: false,
+            welcome_open: HWND(null_mut()),
+            welcome_edit: HWND(null_mut()),
+            welcome_icon: HICON(null_mut()),
         }));
 
         let hwnd = CreateWindowExW(
@@ -141,7 +165,7 @@ fn main() -> windows::core::Result<()> {
         if let Some(path) = initial_file {
             load_markdown(hwnd, &path);
         } else {
-            set_rtf(hwnd, welcome_rtf(false));
+            show_welcome(hwnd);
         }
 
         let mut msg = MSG::default();
@@ -220,6 +244,7 @@ unsafe extern "system" fn window_proc(
                     );
                     state.borrow_mut().rich_edit = rich_edit;
                 }
+                create_welcome_controls(hwnd);
             }
             LRESULT(0)
         }
@@ -233,6 +258,7 @@ unsafe extern "system" fn window_proc(
                     set_view_padding(rich_edit, width, height);
                 }
             }
+            layout_welcome(hwnd, (lparam.0 & 0xffff) as i32, ((lparam.0 >> 16) & 0xffff) as i32);
             LRESULT(0)
         }
         WM_NOTIFY => {
@@ -246,8 +272,23 @@ unsafe extern "system" fn window_proc(
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
         WM_DRAWITEM => {
-            if draw_menu_item(lparam, current_dark(hwnd)) {
+            let dark = current_dark(hwnd);
+            if draw_menu_item(lparam, dark) || draw_welcome_button(lparam, dark) {
                 return LRESULT(1);
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+        WM_ERASEBKGND => {
+            if welcome_visible(hwnd) {
+                erase_welcome_background(hwnd, HDC(wparam.0 as *mut _));
+                return LRESULT(1);
+            }
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+        WM_PAINT => {
+            if welcome_visible(hwnd) {
+                paint_welcome(hwnd);
+                return LRESULT(0);
             }
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
@@ -293,6 +334,14 @@ unsafe extern "system" fn window_proc(
                 }
                 ID_SETTINGS_DARKMODE => {
                     toggle_dark_mode(hwnd);
+                }
+                ID_WELCOME_OPEN => {
+                    if let Some(path) = choose_markdown_file(hwnd) {
+                        load_markdown(hwnd, &path);
+                    }
+                }
+                ID_WELCOME_EDIT => {
+                    // Placeholder — behavior to be implemented later.
                 }
                 _ => {}
             }
@@ -344,6 +393,7 @@ unsafe fn create_menu(hwnd: HWND) {
 
 unsafe fn show_about(hwnd: HWND) {
     let dark = current_dark(hwnd);
+    set_welcome_visible(hwnd, false);
     set_rtf(hwnd, about_rtf(dark));
     if let Some(state) = state(hwnd) {
         let mut state = state.borrow_mut();
@@ -418,18 +468,325 @@ unsafe fn refresh_view(hwnd: HWND, dark: bool) {
         None => return,
     };
 
+    let _ = dark;
     if let Some(path) = current_file {
         load_markdown(hwnd, &path);
     } else if about_visible {
         show_about(hwnd);
     } else {
-        set_rtf(hwnd, welcome_rtf(dark));
+        show_welcome(hwnd);
     }
 }
 
 fn colorref(rgb: (u8, u8, u8)) -> COLORREF {
     let (r, g, b) = rgb;
     COLORREF(r as u32 | ((g as u32) << 8) | ((b as u32) << 16))
+}
+
+// ---------------------------------------------------------------------------
+// Welcome (start) screen
+// ---------------------------------------------------------------------------
+
+// Create a Segoe UI font at the given pixel height.
+unsafe fn ui_font(height: i32, bold: bool) -> HFONT {
+    let mut lf = LOGFONTW {
+        lfHeight: -height,
+        lfWeight: if bold { 700 } else { 400 },
+        ..Default::default()
+    };
+    for (slot, ch) in lf.lfFaceName.iter_mut().zip("Segoe UI".encode_utf16()) {
+        *slot = ch;
+    }
+    CreateFontIndirectW(&lf)
+}
+
+fn welcome_bg(dark: bool) -> (u8, u8, u8) {
+    if dark {
+        (30, 30, 30)
+    } else {
+        (255, 255, 255)
+    }
+}
+
+fn welcome_title_color(dark: bool) -> (u8, u8, u8) {
+    if dark {
+        (235, 235, 235)
+    } else {
+        (24, 24, 27)
+    }
+}
+
+fn welcome_subtitle_color(dark: bool) -> (u8, u8, u8) {
+    if dark {
+        (150, 150, 150)
+    } else {
+        (101, 117, 133)
+    }
+}
+
+unsafe fn welcome_visible(hwnd: HWND) -> bool {
+    state(hwnd).map_or(false, |state| state.borrow().welcome_visible)
+}
+
+// Create the two owner-drawn buttons and load the display icon. Called once
+// from WM_CREATE; the controls start hidden and are shown via the welcome view.
+unsafe fn create_welcome_controls(hwnd: HWND) {
+    let instance = HINSTANCE(GetModuleHandleW(None).map_or(null_mut(), |m| m.0));
+
+    let make_button = |label: PCWSTR, id: usize| -> HWND {
+        CreateWindowExW(
+            WINDOW_EX_STYLE::default(),
+            w!("BUTTON"),
+            label,
+            WS_CHILD | WS_TABSTOP | WINDOW_STYLE(BS_OWNERDRAW as u32),
+            0,
+            0,
+            WELCOME_BTN_W,
+            WELCOME_BTN_H,
+            hwnd,
+            HMENU(id as *mut _),
+            instance,
+            None,
+        )
+        .unwrap_or(HWND(null_mut()))
+    };
+
+    let open = make_button(w!("Open"), ID_WELCOME_OPEN);
+    let edit = make_button(w!("Edit"), ID_WELCOME_EDIT);
+
+    // Load the embedded app icon (resource id 1) at display size.
+    let icon = LoadImageW(
+        instance,
+        PCWSTR(1 as *const u16),
+        IMAGE_ICON,
+        WELCOME_ICON,
+        WELCOME_ICON,
+        LR_DEFAULTCOLOR,
+    )
+    .map(|handle| HICON(handle.0))
+    .unwrap_or(HICON(null_mut()));
+
+    if let Some(state) = state(hwnd) {
+        let mut state = state.borrow_mut();
+        state.welcome_open = open;
+        state.welcome_edit = edit;
+        state.welcome_icon = icon;
+    }
+}
+
+// Position the two buttons in the right half of the window.
+unsafe fn layout_welcome(hwnd: HWND, width: i32, height: i32) {
+    let (open, edit) = match state(hwnd) {
+        Some(state) => {
+            let state = state.borrow();
+            (state.welcome_open, state.welcome_edit)
+        }
+        None => return,
+    };
+    if open.0.is_null() || edit.0.is_null() {
+        return;
+    }
+
+    let right_center = width * 3 / 4;
+    let btn_x = (right_center - WELCOME_BTN_W / 2).max(0);
+    let total_h = WELCOME_BTN_H * 2 + WELCOME_BTN_GAP;
+    let top = (height - total_h) / 2;
+
+    let _ = MoveWindow(open, btn_x, top, WELCOME_BTN_W, WELCOME_BTN_H, true);
+    let _ = MoveWindow(
+        edit,
+        btn_x,
+        top + WELCOME_BTN_H + WELCOME_BTN_GAP,
+        WELCOME_BTN_W,
+        WELCOME_BTN_H,
+        true,
+    );
+}
+
+unsafe fn show_welcome(hwnd: HWND) {
+    if let Some(state) = state(hwnd) {
+        let mut state = state.borrow_mut();
+        state.current_file = None;
+        state.about_visible = false;
+    }
+    set_welcome_visible(hwnd, true);
+    let _ = SetWindowTextW(hwnd, APP_TITLE);
+}
+
+// Toggle the welcome controls and the document view (they are mutually
+// exclusive: the welcome screen owns the client area, otherwise the RichEdit
+// does).
+unsafe fn set_welcome_visible(hwnd: HWND, visible: bool) {
+    let (open, edit, rich_edit) = match state(hwnd) {
+        Some(state) => {
+            let mut state = state.borrow_mut();
+            state.welcome_visible = visible;
+            (state.welcome_open, state.welcome_edit, state.rich_edit)
+        }
+        None => return,
+    };
+
+    let show = if visible { SW_SHOW } else { SW_HIDE };
+    if !open.0.is_null() {
+        let _ = ShowWindow(open, show);
+    }
+    if !edit.0.is_null() {
+        let _ = ShowWindow(edit, show);
+    }
+    if !rich_edit.0.is_null() {
+        let _ = ShowWindow(rich_edit, if visible { SW_HIDE } else { SW_SHOW });
+    }
+
+    if visible {
+        let _ = InvalidateRect(hwnd, None, true);
+        if !open.0.is_null() {
+            let _ = InvalidateRect(open, None, true);
+        }
+        if !edit.0.is_null() {
+            let _ = InvalidateRect(edit, None, true);
+        }
+    }
+}
+
+unsafe fn erase_welcome_background(hwnd: HWND, hdc: HDC) {
+    let mut rc = RECT::default();
+    if GetClientRect(hwnd, &mut rc).is_err() {
+        return;
+    }
+    let brush = CreateSolidBrush(colorref(welcome_bg(current_dark(hwnd))));
+    fill_rect(hdc, &rc, brush);
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+}
+
+// Paint the left pane: app icon and name (background already erased).
+unsafe fn paint_welcome(hwnd: HWND) {
+    let dark = current_dark(hwnd);
+    let icon = state(hwnd).map_or(HICON(null_mut()), |s| s.borrow().welcome_icon);
+
+    let mut ps = PAINTSTRUCT::default();
+    let hdc = BeginPaint(hwnd, &mut ps);
+
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    let width = rc.right - rc.left;
+    let height = rc.bottom - rc.top;
+
+    // Left pane is the left half; center the icon + title block within it.
+    let left_center = width / 4;
+    let block_h = WELCOME_ICON + 24 + 48; // icon + gap + title/subtitle area
+    let icon_top = ((height - block_h) / 2).max(VIEW_PADDING);
+
+    if !icon.0.is_null() {
+        let _ = DrawIconEx(
+            hdc,
+            left_center - WELCOME_ICON / 2,
+            icon_top,
+            icon,
+            WELCOME_ICON,
+            WELCOME_ICON,
+            0,
+            HBRUSH(null_mut()),
+            DI_NORMAL,
+        );
+    }
+
+    SetBkMode(hdc, TRANSPARENT);
+
+    // Title "Markd".
+    let title_font = TITLE_FONT.with(|f| *f);
+    let prev = SelectObject(hdc, HGDIOBJ(title_font.0));
+    SetTextColor(hdc, colorref(welcome_title_color(dark)));
+    let mut title: Vec<u16> = "Markd".encode_utf16().collect();
+    let mut title_rc = RECT {
+        left: 0,
+        top: icon_top + WELCOME_ICON + 16,
+        right: width / 2,
+        bottom: icon_top + WELCOME_ICON + 16 + 52,
+    };
+    let _ = DrawTextW(
+        hdc,
+        &mut title,
+        &mut title_rc,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
+    SelectObject(hdc, prev);
+
+    // Subtitle.
+    let subtitle_font = SUBTITLE_FONT.with(|f| *f);
+    let prev = SelectObject(hdc, HGDIOBJ(subtitle_font.0));
+    SetTextColor(hdc, colorref(welcome_subtitle_color(dark)));
+    let mut subtitle: Vec<u16> = "Markdown Viewer".encode_utf16().collect();
+    let mut subtitle_rc = RECT {
+        left: 0,
+        top: title_rc.bottom,
+        right: width / 2,
+        bottom: title_rc.bottom + 28,
+    };
+    let _ = DrawTextW(
+        hdc,
+        &mut subtitle,
+        &mut subtitle_rc,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
+    SelectObject(hdc, prev);
+
+    let _ = EndPaint(hwnd, &ps);
+}
+
+// Owner-draw for the welcome buttons. Returns true if it handled the item.
+unsafe fn draw_welcome_button(lparam: LPARAM, dark: bool) -> bool {
+    let dis = match (lparam.0 as *const DRAWITEMSTRUCT).as_ref() {
+        Some(dis) if dis.CtlType == ODT_BUTTON => dis,
+        _ => return false,
+    };
+
+    let primary = dis.CtlID as usize == ID_WELCOME_OPEN;
+    let pressed = dis.itemState.0 & ODS_SELECTED.0 != 0;
+    let hdc = dis.hDC;
+    let rc = dis.rcItem;
+
+    // Resolve colors: a filled accent button for "Open", a neutral/outlined
+    // button for "Edit".
+    let accent = if pressed { (0, 95, 184) } else { (0, 120, 212) };
+    let (fill, border, text) = if primary {
+        (accent, accent, (255u8, 255u8, 255u8))
+    } else if dark {
+        let f = if pressed { (60, 60, 60) } else { (45, 45, 45) };
+        (f, (90, 90, 90), (220, 220, 220))
+    } else {
+        let f = if pressed { (224, 224, 224) } else { (243, 243, 243) };
+        (f, (200, 200, 200), (24, 24, 27))
+    };
+
+    let brush = CreateSolidBrush(colorref(fill));
+    let pen = CreatePen(PS_SOLID, 1, colorref(border));
+    let prev_brush = SelectObject(hdc, HGDIOBJ(brush.0));
+    let prev_pen = SelectObject(hdc, HGDIOBJ(pen.0));
+    let _ = RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 10, 10);
+    SelectObject(hdc, prev_brush);
+    SelectObject(hdc, prev_pen);
+    let _ = DeleteObject(HGDIOBJ(brush.0));
+    let _ = DeleteObject(HGDIOBJ(pen.0));
+
+    // Label from the button's window text.
+    let mut label = [0u16; 64];
+    let len = GetWindowTextW(dis.hwndItem, &mut label);
+    let mut text_buf = label[..len as usize].to_vec();
+
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, colorref(text));
+    let font = BUTTON_FONT.with(|f| *f);
+    let prev_font = SelectObject(hdc, HGDIOBJ(font.0));
+    let mut text_rc = rc;
+    let _ = DrawTextW(
+        hdc,
+        &mut text_buf,
+        &mut text_rc,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+    );
+    SelectObject(hdc, prev_font);
+
+    true
 }
 
 // Resolve the system menu font so owner-drawn items match everything else.
@@ -874,6 +1231,7 @@ fn load_markdown(hwnd: HWND, path: &Path) {
             let dark = unsafe { current_dark(hwnd) };
             let rtf = markdown_to_rtf(&markdown, dark);
             unsafe {
+                set_welcome_visible(hwnd, false);
                 set_rtf(hwnd, rtf);
                 let mut rich_edit = HWND(null_mut());
                 if let Some(state) = state(hwnd) {
@@ -962,13 +1320,6 @@ fn rtf_header(dark: bool) -> String {
     format!(
         r"{{\rtf1\ansi\deff0{{\fonttbl{{\f0 Segoe UI;}}{{\f1 Consolas;}}}}{}\paperw12240\paperh15840\margl720\margr720\viewkind4\uc1",
         color_table(dark)
-    )
-}
-
-fn welcome_rtf(dark: bool) -> String {
-    format!(
-        r"{}\pard\cf1\sa220\f0\fs36\b Markd\b0\par\fs22 Open a Markdown file with File > Open.\par}}",
-        rtf_header(dark)
     )
 }
 
