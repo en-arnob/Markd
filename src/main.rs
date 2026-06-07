@@ -520,9 +520,11 @@ unsafe fn measure_menu_item(lparam: LPARAM) -> bool {
         None => return false,
     };
 
-    let size = text_extent(&label.text);
+    // Measure without the '&' mnemonic marker, which is consumed (not drawn)
+    // when the item is painted — otherwise items measure wider than they show.
+    let size = text_extent(&strip_mnemonic(&label.text));
     if label.is_bar {
-        mis.itemWidth = (size.cx + 16).max(0) as u32;
+        mis.itemWidth = (size.cx + 8).max(0) as u32;
         mis.itemHeight = GetSystemMetrics(SM_CYMENU).max(size.cy) as u32;
     } else {
         mis.itemWidth = (menu_gutter() + size.cx + 16).max(0) as u32;
@@ -742,6 +744,20 @@ fn mnemonic_char(text: &[u16]) -> Option<char> {
     let pos = text.iter().position(|&c| c == amp)?;
     let next = *text.get(pos + 1)?;
     char::from_u32(next as u32).map(|c| c.to_ascii_lowercase())
+}
+
+// Drop the first '&' mnemonic marker (it's drawn as an underline, not a glyph)
+// so the label measures at its visible width. A trailing null is preserved.
+fn strip_mnemonic(text: &[u16]) -> Vec<u16> {
+    let amp = u16::from(b'&');
+    if let Some(pos) = text.iter().position(|&c| c == amp) {
+        let mut out = Vec::with_capacity(text.len() - 1);
+        out.extend_from_slice(&text[..pos]);
+        out.extend_from_slice(&text[pos + 1..]);
+        out
+    } else {
+        text.to_vec()
+    }
 }
 
 unsafe fn handle_notification(hwnd: HWND, lparam: LPARAM) {
