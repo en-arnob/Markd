@@ -5,6 +5,13 @@ edition = "2021"
 description = "A lightweight native Windows Markdown viewer"
 license = "MIT"
 
+# The package is also the workspace root; `xtask` is the build/packaging helper.
+# `cargo build` here still builds only `markd` (default-members), while
+# `cargo dist` runs the xtask that builds the release exe and the installer.
+[workspace]
+members = ["xtask"]
+default-members = ["."]
+
 [build-dependencies]
 winresource = "0.1"
 

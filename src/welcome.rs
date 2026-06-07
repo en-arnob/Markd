@@ -262,7 +262,7 @@ pub(crate) unsafe fn paint_welcome(hwnd: HWND) {
     let subtitle_font = SUBTITLE_FONT.with(|f| *f);
     let prev = SelectObject(hdc, HGDIOBJ(subtitle_font.0));
     SetTextColor(hdc, colorref(welcome_subtitle_color(dark)));
-    let mut subtitle: Vec<u16> = "Markdown Viewer".encode_utf16().collect();
+    let mut subtitle: Vec<u16> = "The Ultimate Markdown Utility".encode_utf16().collect();
     let mut subtitle_rc = RECT {
         left: 0,
         top: title_rc.bottom,

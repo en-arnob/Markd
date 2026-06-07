@@ -1,0 +1,8 @@
+# `cargo dist` builds the release binary and packages the standalone installer.
+[alias]
+dist = "run --package xtask --"
+
+# Statically link the MSVC runtime so markd.exe runs on a clean Windows install
+# with no Visual C++ redistributable required.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
