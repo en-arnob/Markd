@@ -18,17 +18,19 @@ use windows::Win32::Graphics::Gdi::{
     DeleteObject, DrawTextW, EndPaint, FillRgn, GetDC, GetStockObject, GetSysColor,
     GetTextExtentPoint32W, InvalidateRect, ReleaseDC, RoundRect, SelectObject, SetBkMode,
     SetTextColor, UpdateWindow, COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, COLOR_MENU,
-    COLOR_MENUTEXT, DT_CENTER, DT_HIDEPREFIX, DT_LEFT, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HFONT,
+    COLOR_MENUTEXT, DT_CENTER, DT_HIDEPREFIX, DT_LEFT, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HBRUSH,
+    HDC, HFONT,
     HGDIOBJ, LOGFONTW, PAINTSTRUCT, PS_SOLID, RGN_DIFF, TRANSPARENT, WHITE_BRUSH,
 };
 use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::{GetModuleHandleW, LoadLibraryW};
 use windows::Win32::UI::Controls::Dialogs::{
-    GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+    GetOpenFileNameW, GetSaveFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_OVERWRITEPROMPT,
+    OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows::Win32::UI::Controls::RichEdit::{
     CHARFORMAT2W, CHARRANGE, EDITSTREAM, EM_GETTEXTRANGE, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT,
-    EM_SETEVENTMASK, EM_STREAMIN, ENLINK, ENM_LINK, EN_LINK, CFM_COLOR, CFM_FACE, CFM_MASK,
+    EM_SETEVENTMASK, EM_STREAMIN, ENLINK, ENM_CHANGE, ENM_LINK, EN_LINK, CFM_COLOR, CFM_FACE, CFM_MASK,
     CFM_SIZE, SCF_ALL, SF_RTF, TEXTRANGEW,
 };
 use windows::Win32::UI::Controls::EM_SETRECT;
@@ -41,19 +43,22 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CheckMenuItem, CreateMenu, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, DrawIconEx, DrawMenuBar, GetClientRect, GetMenu, GetMenuBarInfo,
+    AppendMenuW, CheckMenuItem, CreateAcceleratorTableW, CreateMenu, CreateWindowExW, DefWindowProcW,
+    DestroyWindow, DispatchMessageW, DrawIconEx, DrawMenuBar, GetClientRect, GetMenu, GetMenuBarInfo,
     GetMenuItemCount, GetMenuItemInfoW, GetMenuItemRect, GetMessageW, GetSystemMetrics,
     GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, LoadImageW,
     MessageBoxW,
-    MoveWindow, PostQuitMessage, RegisterClassW, SendMessageW, SetCursor, SetMenu, SetMenuItemInfoW,
-    SetWindowLongPtrW, SetWindowTextW, ShowWindow, SystemParametersInfoW, TranslateMessage,
-    BS_OWNERDRAW, CREATESTRUCTW, CW_USEDEFAULT, DI_NORMAL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
-    GWLP_USERDATA, HICON, HMENU, IDC_ARROW, IMAGE_ICON, LR_DEFAULTCOLOR, LoadIconW, MENUBARINFO,
+    MoveWindow, PostMessageW, PostQuitMessage, RegisterClassW, SendMessageW, SetCursor, SetMenu,
+    SetMenuItemInfoW,
+    SetWindowLongPtrW, SetWindowTextW, ShowWindow, SystemParametersInfoW, TranslateAcceleratorW,
+    TranslateMessage, ACCEL, ACCEL_VIRT_FLAGS, BS_OWNERDRAW, CREATESTRUCTW, CW_USEDEFAULT, DI_NORMAL,
+    EN_CHANGE, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY, FCONTROL, FVIRTKEY, GWLP_USERDATA, HACCEL,
+    HICON, HMENU, IDC_ARROW, IDNO, IDYES, IMAGE_ICON, LR_DEFAULTCOLOR, LoadIconW,
+    MB_ICONWARNING, MB_YESNOCANCEL, MENUBARINFO,
     MENUITEMINFOW, MF_BYCOMMAND, MF_CHECKED, MF_POPUP, MF_STRING, MF_UNCHECKED, MFT_OWNERDRAW,
     MIIM_DATA, MIIM_FTYPE, MNC_EXECUTE, MSG, NONCLIENTMETRICSW, OBJID_MENU, SM_CXMENUCHECK,
     SM_CYMENU, SPI_GETNONCLIENTMETRICS, SW_HIDE, SW_SHOW, SW_SHOWNORMAL,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WINDOW_STYLE, WM_COMMAND, WM_CREATE,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
     WM_DESTROY, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_MEASUREITEM, WM_MENUCHAR, WM_NCCREATE,
     WM_NCPAINT, WM_NOTIFY, WM_PAINT, WM_SETCURSOR, WM_SIZE, WNDCLASSW, WS_CHILD, WS_EX_CLIENTEDGE,
     WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
@@ -63,6 +68,7 @@ const APP_CLASS: PCWSTR = w!("MarkdWindow");
 const APP_TITLE: PCWSTR = w!("Markd");
 const ID_FILE_OPEN: usize = 1001;
 const ID_FILE_EXIT: usize = 1002;
+const ID_FILE_SAVE: usize = 1003;
 const ID_HELP_ABOUT: usize = 2001;
 const ID_SETTINGS_DARKMODE: usize = 3001;
 const ID_SETTINGS_EDITMODE: usize = 3002;
@@ -96,6 +102,12 @@ struct AppState {
     // in memory so edits survive theme/mode toggles.
     edit_mode: bool,
     source: String,
+    // True when the in-memory source has unsaved edits. Reflected in the title
+    // bar (a trailing " *") and used to prompt before closing.
+    dirty: bool,
+    // Set while we update the editor programmatically (loading/rendering) so the
+    // resulting EN_CHANGE notifications don't get mistaken for user edits.
+    suppress_dirty: bool,
     // Welcome (start) screen: shown when no document is open.
     welcome_visible: bool,
     welcome_open: HWND,
@@ -149,6 +161,8 @@ fn main() -> windows::core::Result<()> {
             dark_mode: false,
             edit_mode: false,
             source: String::new(),
+            dirty: false,
+            suppress_dirty: false,
             welcome_visible: false,
             welcome_open: HWND(null_mut()),
             welcome_edit: HWND(null_mut()),
@@ -179,10 +193,20 @@ fn main() -> windows::core::Result<()> {
             show_welcome(hwnd);
         }
 
+        // Ctrl+S -> Save.
+        let accel = [ACCEL {
+            fVirt: ACCEL_VIRT_FLAGS(FCONTROL.0 | FVIRTKEY.0),
+            key: b'S' as u16,
+            cmd: ID_FILE_SAVE as u16,
+        }];
+        let accel_table = CreateAcceleratorTableW(&accel).unwrap_or(HACCEL(null_mut()));
+
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
+            if accel_table.0.is_null() || TranslateAcceleratorW(hwnd, accel_table, &msg) == 0 {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
         }
     }
 
@@ -251,7 +275,7 @@ unsafe extern "system" fn window_proc(
                         rich_edit,
                         EM_SETEVENTMASK,
                         WPARAM(0),
-                        LPARAM(ENM_LINK as isize),
+                        LPARAM((ENM_LINK | ENM_CHANGE) as isize),
                     );
                     state.borrow_mut().rich_edit = rich_edit;
                 }
@@ -331,14 +355,28 @@ unsafe extern "system" fn window_proc(
             DefWindowProcW(hwnd, message, wparam, lparam)
         }
         WM_COMMAND => {
+            // EN_CHANGE from the editor means the user changed the text; flag the
+            // document as having unsaved edits (programmatic updates are skipped
+            // via suppress_dirty).
+            if ((wparam.0 >> 16) & 0xffff) as u32 == EN_CHANGE {
+                let rich = state(hwnd).map_or(HWND(null_mut()), |s| s.borrow().rich_edit);
+                if !rich.0.is_null() && lparam.0 == rich.0 as isize {
+                    mark_dirty(hwnd);
+                    return LRESULT(0);
+                }
+            }
             match wparam.0 & 0xffff {
                 ID_FILE_OPEN => {
                     if let Some(path) = choose_markdown_file(hwnd) {
                         load_markdown(hwnd, &path);
                     }
                 }
+                ID_FILE_SAVE => {
+                    save_document(hwnd);
+                }
                 ID_FILE_EXIT => {
-                    let _ = DestroyWindow(hwnd);
+                    // Go through WM_CLOSE so the unsaved-changes prompt runs.
+                    let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
                 }
                 ID_HELP_ABOUT => {
                     show_about(hwnd);
@@ -367,6 +405,12 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_CLOSE => {
+            if confirm_discard_changes(hwnd) {
+                let _ = DestroyWindow(hwnd);
+            }
+            LRESULT(0)
+        }
         WM_DESTROY => {
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RefCell<AppState>;
             if !ptr.is_null() {
@@ -392,6 +436,7 @@ unsafe fn create_menu(hwnd: HWND) {
     let help_menu = CreateMenu().unwrap_or_default();
 
     let _ = AppendMenuW(file_menu, MF_STRING, ID_FILE_OPEN, w!("&Open..."));
+    let _ = AppendMenuW(file_menu, MF_STRING, ID_FILE_SAVE, w!("&Save"));
     let _ = AppendMenuW(file_menu, MF_STRING, ID_FILE_EXIT, w!("E&xit"));
     let _ = AppendMenuW(settings_menu, MF_STRING, ID_SETTINGS_DARKMODE, w!("&Dark Mode"));
     let _ = AppendMenuW(settings_menu, MF_STRING, ID_SETTINGS_EDITMODE, w!("&Edit Mode"));
@@ -407,6 +452,7 @@ unsafe fn create_menu(hwnd: HWND) {
     attach_label(menu, 1, true, "&Settings", true);
     attach_label(menu, 2, true, "&Help", true);
     attach_label(file_menu, ID_FILE_OPEN as u32, false, "&Open...", false);
+    attach_label(file_menu, ID_FILE_SAVE as u32, false, "&Save", false);
     attach_label(file_menu, ID_FILE_EXIT as u32, false, "E&xit", false);
     attach_label(settings_menu, ID_SETTINGS_DARKMODE as u32, false, "&Dark Mode", false);
     attach_label(settings_menu, ID_SETTINGS_EDITMODE as u32, false, "&Edit Mode", false);
@@ -535,8 +581,10 @@ unsafe fn render_document(hwnd: HWND) {
     if edit_mode {
         SendMessageW(rich_edit, EM_SETREADONLY, WPARAM(0), LPARAM(0));
         let wide = to_wide(&source);
+        set_suppress_dirty(hwnd, true);
         let _ = SetWindowTextW(rich_edit, PCWSTR(wide.as_ptr()));
         set_edit_char_format(rich_edit, dark);
+        set_suppress_dirty(hwnd, false);
     } else {
         set_rtf(hwnd, markdown_to_rtf(&source, dark));
         SendMessageW(rich_edit, EM_SETREADONLY, WPARAM(1), LPARAM(0));
@@ -624,6 +672,172 @@ unsafe fn toggle_edit_mode(hwnd: HWND) {
         if !rich_edit.0.is_null() {
             let _ = SetFocus(rich_edit);
         }
+    }
+}
+
+unsafe fn is_dirty(hwnd: HWND) -> bool {
+    state(hwnd).map_or(false, |state| state.borrow().dirty)
+}
+
+// Toggle suppression of edit notifications around programmatic text updates so
+// they don't mark the document dirty.
+unsafe fn set_suppress_dirty(hwnd: HWND, value: bool) {
+    if let Some(state) = state(hwnd) {
+        state.borrow_mut().suppress_dirty = value;
+    }
+}
+
+// Flag the document as having unsaved edits and refresh the title bar. No-op
+// while suppressed or when already dirty.
+unsafe fn mark_dirty(hwnd: HWND) {
+    let changed = match state(hwnd) {
+        Some(state) => {
+            let mut state = state.borrow_mut();
+            if state.suppress_dirty || state.dirty {
+                false
+            } else {
+                state.dirty = true;
+                true
+            }
+        }
+        None => false,
+    };
+    if changed {
+        refresh_title(hwnd);
+    }
+}
+
+// Set the window title to reflect the current document and dirty state.
+unsafe fn refresh_title(hwnd: HWND) {
+    let (file, dirty, about) = match state(hwnd) {
+        Some(state) => {
+            let state = state.borrow();
+            (state.current_file.clone(), state.dirty, state.about_visible)
+        }
+        None => return,
+    };
+
+    let title = if about {
+        "Markd - About".to_string()
+    } else {
+        match file {
+            Some(path) => format!("Markd - {}{}", path.display(), if dirty { " *" } else { "" }),
+            None => "Markd".to_string(),
+        }
+    };
+    let wide = to_wide(&title);
+    let _ = SetWindowTextW(hwnd, PCWSTR(wide.as_ptr()));
+}
+
+// Prompt to save when closing with unsaved edits. Returns true if it is OK to
+// proceed with closing (saved or discarded), false to cancel and stay open.
+unsafe fn confirm_discard_changes(hwnd: HWND) -> bool {
+    let (dirty, has_file, about) = match state(hwnd) {
+        Some(state) => {
+            let state = state.borrow();
+            (state.dirty, state.current_file.is_some(), state.about_visible)
+        }
+        None => return true,
+    };
+    if !dirty || !has_file || about {
+        return true;
+    }
+
+    let result = MessageBoxW(
+        hwnd,
+        w!("You have unsaved changes. Save before closing?"),
+        APP_TITLE,
+        MB_YESNOCANCEL | MB_ICONWARNING,
+    );
+    if result == IDYES {
+        save_document(hwnd);
+        // If the save failed or its dialog was cancelled the document is still
+        // dirty; keep the window open.
+        !is_dirty(hwnd)
+    } else if result == IDNO {
+        true
+    } else {
+        // IDCANCEL or the dialog was dismissed.
+        false
+    }
+}
+
+// Write the current source back to disk. Prompts for a path if the document has
+// no associated file. No-op when there is no open document.
+unsafe fn save_document(hwnd: HWND) {
+    let (has_doc, about, edit_mode, current_file) = match state(hwnd) {
+        Some(state) => {
+            let state = state.borrow();
+            (
+                state.current_file.is_some(),
+                state.about_visible,
+                state.edit_mode,
+                state.current_file.clone(),
+            )
+        }
+        None => return,
+    };
+    if about || !has_doc {
+        return;
+    }
+
+    // Make sure in-progress edits are captured before writing.
+    if edit_mode {
+        sync_source_from_editor(hwnd);
+    }
+
+    let target = match current_file.or_else(|| choose_save_path(hwnd)) {
+        Some(path) => path,
+        None => return,
+    };
+
+    let source = state(hwnd).map_or(String::new(), |s| s.borrow().source.clone());
+    match fs::write(&target, source) {
+        Ok(()) => {
+            if let Some(state) = state(hwnd) {
+                let mut state = state.borrow_mut();
+                state.current_file = Some(target.clone());
+                state.dirty = false;
+            }
+            refresh_title(hwnd);
+        }
+        Err(error) => {
+            let message = format!("Could not save file:\n{}\n\n{}", target.display(), error);
+            let wide = to_wide(&message);
+            let _ = MessageBoxW(
+                hwnd,
+                PCWSTR(wide.as_ptr()),
+                w!("Markd"),
+                windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
+            );
+        }
+    }
+}
+
+// Save As dialog, returning the chosen path. Defaults to a .md extension.
+unsafe fn choose_save_path(hwnd: HWND) -> Option<PathBuf> {
+    let mut file_name = [0u16; MAX_PATH as usize];
+    let filter = OPEN_FILTER.with(|filter| filter.as_ptr());
+    let default_ext = to_wide("md");
+    let mut save = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: hwnd,
+        lpstrFilter: PCWSTR(filter),
+        lpstrFile: PWSTR(file_name.as_mut_ptr()),
+        nMaxFile: file_name.len() as u32,
+        lpstrDefExt: PCWSTR(default_ext.as_ptr()),
+        Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY,
+        ..Default::default()
+    };
+
+    if GetSaveFileNameW(&mut save).as_bool() {
+        let len = file_name
+            .iter()
+            .position(|&c| c == 0)
+            .unwrap_or(file_name.len());
+        Some(PathBuf::from(String::from_utf16_lossy(&file_name[..len])))
+    } else {
+        None
     }
 }
 
@@ -1029,11 +1243,20 @@ unsafe fn measure_menu_item(lparam: LPARAM) -> bool {
 
     // Measure without the '&' mnemonic marker, which is consumed (not drawn)
     // when the item is painted — otherwise items measure wider than they show.
-    let size = text_extent(&strip_mnemonic(&label.text));
+    let content = strip_mnemonic(&label.text);
+    let content = trim_null(&content);
     if label.is_bar {
+        let size = text_extent(content);
         mis.itemWidth = (size.cx + 8).max(0) as u32;
         mis.itemHeight = GetSystemMetrics(SM_CYMENU).max(size.cy) as u32;
+    } else if let Some(tab) = content.iter().position(|&c| c == TAB) {
+        // "Label\tAccelerator": reserve room for both plus a gap between them.
+        let left = text_extent(&content[..tab]);
+        let right = text_extent(&content[tab + 1..]);
+        mis.itemWidth = (menu_gutter() + left.cx + 32 + right.cx + 16).max(0) as u32;
+        mis.itemHeight = (left.cy.max(right.cy) + 8).max(GetSystemMetrics(SM_CYMENU)) as u32;
     } else {
+        let size = text_extent(content);
         mis.itemWidth = (menu_gutter() + size.cx + 16).max(0) as u32;
         mis.itemHeight = (size.cy + 8).max(GetSystemMetrics(SM_CYMENU)) as u32;
     }
@@ -1116,12 +1339,30 @@ unsafe fn draw_menu_item(lparam: LPARAM, dark: bool) -> bool {
             right: rc.right - 8,
             bottom: rc.bottom,
         };
-        let _ = DrawTextW(
-            hdc,
-            &mut text,
-            &mut text_rc,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_HIDEPREFIX,
-        );
+        if let Some(tab) = text.iter().position(|&c| c == TAB) {
+            // Label left-aligned, accelerator hint right-aligned in the same rect.
+            let mut left = text[..tab].to_vec();
+            let mut right = text[tab + 1..].to_vec();
+            let _ = DrawTextW(
+                hdc,
+                &mut left,
+                &mut text_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_HIDEPREFIX,
+            );
+            let _ = DrawTextW(
+                hdc,
+                &mut right,
+                &mut text_rc,
+                DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_HIDEPREFIX,
+            );
+        } else {
+            let _ = DrawTextW(
+                hdc,
+                &mut text,
+                &mut text_rc,
+                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_HIDEPREFIX,
+            );
+        }
     }
 
     if let Some(previous) = previous {
@@ -1243,6 +1484,17 @@ unsafe fn handle_menu_char(wparam: WPARAM, lparam: LPARAM) -> Option<LRESULT> {
         }
     }
     None
+}
+
+// Tab separates a menu label from its accelerator hint (e.g. "Save").
+const TAB: u16 = 9;
+
+// Slice off a trailing null terminator if present.
+fn trim_null(text: &[u16]) -> &[u16] {
+    match text.split_last() {
+        Some((&0, rest)) => rest,
+        _ => text,
+    }
 }
 
 // The character following '&' in a label, lowercased.
@@ -1379,15 +1631,14 @@ fn load_markdown(hwnd: HWND, path: &Path) {
                 state.source = markdown;
                 state.current_file = Some(path.to_path_buf());
                 state.about_visible = false;
+                state.dirty = false;
                 rich_edit = state.rich_edit;
             }
             render_document(hwnd);
             if !rich_edit.0.is_null() {
                 let _ = SetFocus(rich_edit);
             }
-            let title = format!("Markd - {}", path.display());
-            let wide_title = to_wide(&title);
-            let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
+            refresh_title(hwnd);
         },
         Err(error) => unsafe {
             let message = format!("Could not open file:\n{}\n\n{}", path.display(), error);
@@ -1419,12 +1670,14 @@ unsafe fn set_rtf(hwnd: HWND, rtf: String) {
             pfnCallback: Some(rtf_stream_callback),
         };
 
+        set_suppress_dirty(hwnd, true);
         SendMessageW(
             rich_edit,
             EM_STREAMIN,
             WPARAM(SF_RTF as usize),
             LPARAM((&mut edit_stream as *mut EDITSTREAM) as isize),
         );
+        set_suppress_dirty(hwnd, false);
     }
 }
 
@@ -1466,7 +1719,7 @@ fn rtf_header(dark: bool) -> String {
 
 fn about_rtf(dark: bool) -> String {
     format!(
-        r#"{}\pard\cf1\f0\fs40\b Markd\b0\par\pard\sa240\fs22 Lightweight native Markdown viewer for Windows, built with Rust for speed, simplicity, and efficiency.\par\pard\sa140\b Author:\b0  {{\field{{\*\fldinst{{HYPERLINK "https://khalidutsob.com"}}}}{{\fldrslt{{\cf2\ul Khalid Utsob}}}}}}\ul0\cf1\par\pard\sa140\b GitHub:\b0  {{\field{{\*\fldinst{{HYPERLINK "https://github.com/en-arnob/markd"}}}}{{\fldrslt{{\cf2\ul en-arnob/markd}}}}}}\ul0\cf1\par\pard\sa140\b Version:\b0  1.0.3\par}}"#,
+        r#"{}\pard\cf1\f0\fs40\b Markd\b0\par\pard\sa240\fs22 Lightweight native Markdown viewer and editor for Windows, built with Rust for speed, simplicity, and efficiency.\par\pard\sa140\b Author:\b0  {{\field{{\*\fldinst{{HYPERLINK "https://khalidutsob.com"}}}}{{\fldrslt{{\cf2\ul Khalid Utsob}}}}}}\ul0\cf1\par\pard\sa140\b GitHub:\b0  {{\field{{\*\fldinst{{HYPERLINK "https://github.com/en-arnob/markd"}}}}{{\fldrslt{{\cf2\ul en-arnob/markd}}}}}}\ul0\cf1\par\pard\sa140\b Version:\b0  1.0.3\par}}"#,
         rtf_header(dark)
     )
 }
