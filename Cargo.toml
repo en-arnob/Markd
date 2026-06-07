@@ -5,6 +5,9 @@ edition = "2021"
 description = "A lightweight native Windows Markdown viewer"
 license = "MIT"
 
+[build-dependencies]
+winresource = "0.1"
+
 [dependencies]
 pulldown-cmark = "0.12"
 

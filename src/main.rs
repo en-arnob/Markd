@@ -44,7 +44,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     LoadCursorW, MessageBoxW, MoveWindow, PostQuitMessage, RegisterClassW, SendMessageW, SetCursor,
     SetMenu, SetMenuItemInfoW, SetWindowLongPtrW, SetWindowTextW, ShowWindow, SystemParametersInfoW,
     TranslateMessage, CREATESTRUCTW, CW_USEDEFAULT, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
-    GWLP_USERDATA, IDC_ARROW, MENUBARINFO, MENUITEMINFOW, MF_BYCOMMAND, MF_CHECKED, MF_POPUP,
+    GWLP_USERDATA, HICON, IDC_ARROW, LoadIconW, MENUBARINFO, MENUITEMINFOW, MF_BYCOMMAND,
+    MF_CHECKED, MF_POPUP,
     MF_STRING, MF_UNCHECKED, MFT_OWNERDRAW, MIIM_DATA, MIIM_FTYPE,
     MNC_EXECUTE, MSG, NONCLIENTMETRICSW, OBJID_MENU, SM_CXMENUCHECK, SM_CYMENU,
     SPI_GETNONCLIENTMETRICS, SW_SHOW, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -154,8 +155,13 @@ fn main() -> windows::core::Result<()> {
 }
 
 unsafe fn register_window_class(instance: HINSTANCE) -> windows::core::Result<()> {
+    // Resource id "1" matches the icon embedded by build.rs; used for the title
+    // bar, taskbar, and Alt-Tab. (The same resource is the file/exe icon.)
+    let icon = LoadIconW(instance, PCWSTR(1 as *const u16)).unwrap_or(HICON(null_mut()));
+
     let class = WNDCLASSW {
         hCursor: LoadCursorW(None, IDC_ARROW)?,
+        hIcon: icon,
         hInstance: instance,
         lpszClassName: APP_CLASS,
         hbrBackground: HBRUSH(GetStockObject(WHITE_BRUSH).0),
@@ -961,7 +967,7 @@ fn rtf_header(dark: bool) -> String {
 
 fn welcome_rtf(dark: bool) -> String {
     format!(
-        r"{}\pard\cf1\sa220\f0\fs36\b Markd\b0\par\fs22 Open a Markdown file with File > Open, or pass a path on the command line.\par}}",
+        r"{}\pard\cf1\sa220\f0\fs36\b Markd\b0\par\fs22 Open a Markdown file with File > Open.\par}}",
         rtf_header(dark)
     )
 }
