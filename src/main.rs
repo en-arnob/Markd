@@ -27,10 +27,12 @@ use windows::Win32::UI::Controls::Dialogs::{
     GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_PATHMUSTEXIST, OPENFILENAMEW,
 };
 use windows::Win32::UI::Controls::RichEdit::{
-    CHARRANGE, EDITSTREAM, EM_GETTEXTRANGE, EM_SETBKGNDCOLOR, EM_SETEVENTMASK, EM_STREAMIN, ENLINK,
-    ENM_LINK, EN_LINK, SF_RTF, TEXTRANGEW,
+    CHARFORMAT2W, CHARRANGE, EDITSTREAM, EM_GETTEXTRANGE, EM_SETBKGNDCOLOR, EM_SETCHARFORMAT,
+    EM_SETEVENTMASK, EM_STREAMIN, ENLINK, ENM_LINK, EN_LINK, CFM_COLOR, CFM_FACE, CFM_MASK,
+    CFM_SIZE, SCF_ALL, SF_RTF, TEXTRANGEW,
 };
 use windows::Win32::UI::Controls::EM_SETRECT;
+use windows::Win32::UI::Controls::EM_SETREADONLY;
 use windows::Win32::UI::Controls::NMHDR;
 use windows::Win32::UI::Controls::{
     DRAWITEMSTRUCT, MEASUREITEMSTRUCT, ODS_CHECKED, ODS_GRAYED, ODS_HOTLIGHT, ODS_SELECTED,
@@ -42,7 +44,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CheckMenuItem, CreateMenu, CreateWindowExW, DefWindowProcW, DestroyWindow,
     DispatchMessageW, DrawIconEx, DrawMenuBar, GetClientRect, GetMenu, GetMenuBarInfo,
     GetMenuItemCount, GetMenuItemInfoW, GetMenuItemRect, GetMessageW, GetSystemMetrics,
-    GetWindowLongPtrW, GetWindowRect, GetWindowTextW, LoadCursorW, LoadImageW, MessageBoxW,
+    GetWindowLongPtrW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, LoadCursorW, LoadImageW,
+    MessageBoxW,
     MoveWindow, PostQuitMessage, RegisterClassW, SendMessageW, SetCursor, SetMenu, SetMenuItemInfoW,
     SetWindowLongPtrW, SetWindowTextW, ShowWindow, SystemParametersInfoW, TranslateMessage,
     BS_OWNERDRAW, CREATESTRUCTW, CW_USEDEFAULT, DI_NORMAL, ES_AUTOVSCROLL, ES_MULTILINE, ES_READONLY,
@@ -62,6 +65,7 @@ const ID_FILE_OPEN: usize = 1001;
 const ID_FILE_EXIT: usize = 1002;
 const ID_HELP_ABOUT: usize = 2001;
 const ID_SETTINGS_DARKMODE: usize = 3001;
+const ID_SETTINGS_EDITMODE: usize = 3002;
 const ID_WELCOME_OPEN: usize = 4001;
 const ID_WELCOME_EDIT: usize = 4002;
 const VIEW_PADDING: i32 = 24;
@@ -87,6 +91,11 @@ struct AppState {
     current_file: Option<PathBuf>,
     about_visible: bool,
     dark_mode: bool,
+    // Edit mode shows the raw Markdown source as editable text; otherwise the
+    // rendered document is shown read-only. `source` holds the current Markdown
+    // in memory so edits survive theme/mode toggles.
+    edit_mode: bool,
+    source: String,
     // Welcome (start) screen: shown when no document is open.
     welcome_visible: bool,
     welcome_open: HWND,
@@ -138,6 +147,8 @@ fn main() -> windows::core::Result<()> {
             current_file: None,
             about_visible: false,
             dark_mode: false,
+            edit_mode: false,
+            source: String::new(),
             welcome_visible: false,
             welcome_open: HWND(null_mut()),
             welcome_edit: HWND(null_mut()),
@@ -335,13 +346,22 @@ unsafe extern "system" fn window_proc(
                 ID_SETTINGS_DARKMODE => {
                     toggle_dark_mode(hwnd);
                 }
+                ID_SETTINGS_EDITMODE => {
+                    toggle_edit_mode(hwnd);
+                }
                 ID_WELCOME_OPEN => {
+                    // The Open button always opens for viewing.
+                    set_edit_mode(hwnd, false);
                     if let Some(path) = choose_markdown_file(hwnd) {
                         load_markdown(hwnd, &path);
                     }
                 }
                 ID_WELCOME_EDIT => {
-                    // Placeholder — behavior to be implemented later.
+                    // The Edit button opens the file directly into edit mode.
+                    set_edit_mode(hwnd, true);
+                    if let Some(path) = choose_markdown_file(hwnd) {
+                        load_markdown(hwnd, &path);
+                    }
                 }
                 _ => {}
             }
@@ -374,6 +394,7 @@ unsafe fn create_menu(hwnd: HWND) {
     let _ = AppendMenuW(file_menu, MF_STRING, ID_FILE_OPEN, w!("&Open..."));
     let _ = AppendMenuW(file_menu, MF_STRING, ID_FILE_EXIT, w!("E&xit"));
     let _ = AppendMenuW(settings_menu, MF_STRING, ID_SETTINGS_DARKMODE, w!("&Dark Mode"));
+    let _ = AppendMenuW(settings_menu, MF_STRING, ID_SETTINGS_EDITMODE, w!("&Edit Mode"));
     let _ = AppendMenuW(help_menu, MF_STRING, ID_HELP_ABOUT, w!("&About"));
     let _ = AppendMenuW(menu, MF_POPUP, file_menu.0 as usize, w!("&File"));
     let _ = AppendMenuW(menu, MF_POPUP, settings_menu.0 as usize, w!("&Settings"));
@@ -388,6 +409,7 @@ unsafe fn create_menu(hwnd: HWND) {
     attach_label(file_menu, ID_FILE_OPEN as u32, false, "&Open...", false);
     attach_label(file_menu, ID_FILE_EXIT as u32, false, "E&xit", false);
     attach_label(settings_menu, ID_SETTINGS_DARKMODE as u32, false, "&Dark Mode", false);
+    attach_label(settings_menu, ID_SETTINGS_EDITMODE as u32, false, "&Edit Mode", false);
     attach_label(help_menu, ID_HELP_ABOUT as u32, false, "&About", false);
 }
 
@@ -460,19 +482,27 @@ unsafe fn apply_background(hwnd: HWND, dark: bool) {
 
 // Re-render whatever is currently on screen using the given theme.
 unsafe fn refresh_view(hwnd: HWND, dark: bool) {
-    let (current_file, about_visible) = match state(hwnd) {
+    let (has_doc, about_visible, edit_mode) = match state(hwnd) {
         Some(state) => {
             let state = state.borrow();
-            (state.current_file.clone(), state.about_visible)
+            (
+                state.current_file.is_some(),
+                state.about_visible,
+                state.edit_mode,
+            )
         }
         None => return,
     };
 
     let _ = dark;
-    if let Some(path) = current_file {
-        load_markdown(hwnd, &path);
-    } else if about_visible {
+    if about_visible {
         show_about(hwnd);
+    } else if has_doc {
+        // Capture any in-progress edits before re-rendering with new colors.
+        if edit_mode {
+            sync_source_from_editor(hwnd);
+        }
+        render_document(hwnd);
     } else {
         show_welcome(hwnd);
     }
@@ -481,6 +511,120 @@ unsafe fn refresh_view(hwnd: HWND, dark: bool) {
 fn colorref(rgb: (u8, u8, u8)) -> COLORREF {
     let (r, g, b) = rgb;
     COLORREF(r as u32 | ((g as u32) << 8) | ((b as u32) << 16))
+}
+
+// ---------------------------------------------------------------------------
+// Edit mode
+// ---------------------------------------------------------------------------
+
+// Show the current document per edit mode: editable raw Markdown source, or the
+// rendered read-only view. Always renders from the in-memory source.
+unsafe fn render_document(hwnd: HWND) {
+    let (source, edit_mode, rich_edit) = match state(hwnd) {
+        Some(state) => {
+            let state = state.borrow();
+            (state.source.clone(), state.edit_mode, state.rich_edit)
+        }
+        None => return,
+    };
+    if rich_edit.0.is_null() {
+        return;
+    }
+
+    let dark = current_dark(hwnd);
+    if edit_mode {
+        SendMessageW(rich_edit, EM_SETREADONLY, WPARAM(0), LPARAM(0));
+        let wide = to_wide(&source);
+        let _ = SetWindowTextW(rich_edit, PCWSTR(wide.as_ptr()));
+        set_edit_char_format(rich_edit, dark);
+    } else {
+        set_rtf(hwnd, markdown_to_rtf(&source, dark));
+        SendMessageW(rich_edit, EM_SETREADONLY, WPARAM(1), LPARAM(0));
+    }
+}
+
+// Apply a monospace, theme-colored character format for editing plain source.
+unsafe fn set_edit_char_format(rich_edit: HWND, dark: bool) {
+    let mut cf = CHARFORMAT2W::default();
+    cf.Base.cbSize = size_of::<CHARFORMAT2W>() as u32;
+    cf.Base.dwMask = CFM_MASK(CFM_COLOR.0 | CFM_FACE.0 | CFM_SIZE.0);
+    cf.Base.crTextColor = colorref(if dark { MENU_TEXT } else { (24, 24, 27) });
+    cf.Base.yHeight = 220; // ~11pt, in twips
+    for (slot, ch) in cf.Base.szFaceName.iter_mut().zip("Consolas".encode_utf16()) {
+        *slot = ch;
+    }
+    SendMessageW(
+        rich_edit,
+        EM_SETCHARFORMAT,
+        WPARAM(SCF_ALL as usize),
+        LPARAM(&cf as *const CHARFORMAT2W as isize),
+    );
+}
+
+// Pull the edited text out of the control back into the in-memory source.
+unsafe fn sync_source_from_editor(hwnd: HWND) {
+    let rich_edit = match state(hwnd) {
+        Some(state) => state.borrow().rich_edit,
+        None => return,
+    };
+    if rich_edit.0.is_null() {
+        return;
+    }
+
+    let len = GetWindowTextLengthW(rich_edit);
+    if len <= 0 {
+        if let Some(state) = state(hwnd) {
+            state.borrow_mut().source.clear();
+        }
+        return;
+    }
+
+    let mut buf = vec![0u16; len as usize + 1];
+    let got = GetWindowTextW(rich_edit, &mut buf).max(0) as usize;
+    // RichEdit reports line breaks as bare CR; normalize to LF for the parser.
+    let text = String::from_utf16_lossy(&buf[..got])
+        .replace("\r\n", "\n")
+        .replace('\r', "\n");
+    if let Some(state) = state(hwnd) {
+        state.borrow_mut().source = text;
+    }
+}
+
+// Set the edit-mode flag and reflect it in the menu check mark (no view change).
+unsafe fn set_edit_mode(hwnd: HWND, edit: bool) {
+    if let Some(state) = state(hwnd) {
+        state.borrow_mut().edit_mode = edit;
+    }
+    let menu = GetMenu(hwnd);
+    let check = if edit { MF_CHECKED } else { MF_UNCHECKED };
+    CheckMenuItem(menu, ID_SETTINGS_EDITMODE as u32, (MF_BYCOMMAND | check).0);
+}
+
+unsafe fn toggle_edit_mode(hwnd: HWND) {
+    let (has_doc, was_edit) = match state(hwnd) {
+        Some(state) => {
+            let state = state.borrow();
+            (
+                state.current_file.is_some() && !state.about_visible,
+                state.edit_mode,
+            )
+        }
+        None => return,
+    };
+
+    // Capture edits before switching back to the rendered view.
+    if has_doc && was_edit {
+        sync_source_from_editor(hwnd);
+    }
+    set_edit_mode(hwnd, !was_edit);
+
+    if has_doc {
+        render_document(hwnd);
+        let rich_edit = state(hwnd).map_or(HWND(null_mut()), |s| s.borrow().rich_edit);
+        if !rich_edit.0.is_null() {
+            let _ = SetFocus(rich_edit);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1227,27 +1371,24 @@ unsafe fn choose_markdown_file(hwnd: HWND) -> Option<PathBuf> {
 
 fn load_markdown(hwnd: HWND, path: &Path) {
     match fs::read_to_string(path) {
-        Ok(markdown) => {
-            let dark = unsafe { current_dark(hwnd) };
-            let rtf = markdown_to_rtf(&markdown, dark);
-            unsafe {
-                set_welcome_visible(hwnd, false);
-                set_rtf(hwnd, rtf);
-                let mut rich_edit = HWND(null_mut());
-                if let Some(state) = state(hwnd) {
-                    let mut state = state.borrow_mut();
-                    state.current_file = Some(path.to_path_buf());
-                    state.about_visible = false;
-                    rich_edit = state.rich_edit;
-                }
-                if !rich_edit.0.is_null() {
-                    let _ = SetFocus(rich_edit);
-                }
-                let title = format!("Markd - {}", path.display());
-                let wide_title = to_wide(&title);
-                let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
+        Ok(markdown) => unsafe {
+            set_welcome_visible(hwnd, false);
+            let mut rich_edit = HWND(null_mut());
+            if let Some(state) = state(hwnd) {
+                let mut state = state.borrow_mut();
+                state.source = markdown;
+                state.current_file = Some(path.to_path_buf());
+                state.about_visible = false;
+                rich_edit = state.rich_edit;
             }
-        }
+            render_document(hwnd);
+            if !rich_edit.0.is_null() {
+                let _ = SetFocus(rich_edit);
+            }
+            let title = format!("Markd - {}", path.display());
+            let wide_title = to_wide(&title);
+            let _ = SetWindowTextW(hwnd, PCWSTR(wide_title.as_ptr()));
+        },
         Err(error) => unsafe {
             let message = format!("Could not open file:\n{}\n\n{}", path.display(), error);
             let wide_message = to_wide(&message);
